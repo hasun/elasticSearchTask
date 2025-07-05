@@ -17,6 +17,12 @@ public class SearchConst {
         }
     }
 
+    /** 구문검색 패턴 */
+    public static final String PATTENS_SYN = "^\"(.*)\"$";
+    /** 근접검색 패턴 */
+    public static final String PATTENS_POR = "^\"(.*)\\s(.*)\"~[0-9]{1,10}$";
+
+
     public static enum BoolQuery {
         SHOULD, MUST, MUST_NOT
     }
@@ -24,9 +30,10 @@ public class SearchConst {
     // 회사생활 가이드 검색 필드
     public static enum SearchField {
         TITLE_MORPH ("title.morph",10),
+        TITLE_BIGRAM ("title.bigram",1),
         CONTENT_MORPH ("content.morph",2),
         CONTENT_BIGRAM ("content.bigram", 1),
-        COLLAPSE_FIELD ("doc_id", 1);
+        COLLAPSE_FIELD ("news_id", 1);
 
         private String value;
         private float boost;

@@ -37,6 +37,14 @@ public class SearchController {
         return new ResponseEntity<>(searchPage, HttpStatus.OK).getBody();
     }
 
+    @PostMapping("/span")
+    public Page<NewsIndex> findNewsIndexSpan (@Validated String keyword1, String keyword2, int slop, boolean inOrder, int size, int page ) {
+        Pageable pageable = Pageable.ofSize(size).withPage(page);
+        final Page<NewsIndex> searchPage = searchService.searchBySpanNear(keyword1, keyword2, slop, inOrder, pageable);
+        extractedResultPrint(pageable);
+        return new ResponseEntity<>(searchPage, HttpStatus.OK).getBody();
+    }
+
     private static void extractedResultPrint(Pageable searchPage) {
         System.out.print("offset ::" + searchPage.getOffset() + "\t");
         System.out.print("pageNum ::" + searchPage.getPageNumber() + "\t");

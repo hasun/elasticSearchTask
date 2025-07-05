@@ -11,6 +11,7 @@ import elastic.search.dto.PageResult;
 import elastic.search.dto.SearchRequest;
 import elastic.search.repository.NewsRepository;
 import jakarta.validation.Valid;
+import org.elasticsearch.index.query.SpanNearQueryBuilder;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -31,6 +32,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static co.elastic.clients.elasticsearch._types.query_dsl.SpanQuery.Kind.SpanNear;
 
 @Service
 public class SearchService {
@@ -56,51 +59,103 @@ public class SearchService {
         return newsRepository.findByKeywordWithQuery(keyword, pageable);
     }
 
+    /**
+     * Span Near 검색: "데이터"와 "분석" 단어가 최대 2단어 이내, 순서대로 나타나는 문서 검색
+     *
+     * @param keyword1 첫 번째 단어
+     * @param keyword2 두 번째 단어
+     * @param slop     최대 간격 (단어 수)
+     * @param inOrder  순서 유지 여부
+     * @param pageable 페이징 정보
+     * @return 검색 결과 페이지
+     */
+    public Page<NewsIndex> searchBySpanNear(String keyword1, String keyword2, int slop, boolean inOrder, Pageable pageable) {
+        // Build the span_near query
+        SpanNearQuery.Builder spanNearQueryBuilder = new SpanNearQuery.Builder();
+        SpanQuery.Builder spanQueryBuilder = new SpanQuery.Builder();
+        SpanQuery spanQuery1 = spanQueryBuilder.spanTerm(SpanTermQuery.of(st -> st.field("title.morph").value(keyword1))).build();
+        SpanQuery spanQuery2 = spanQueryBuilder.spanTerm(SpanTermQuery.of(st -> st.field("title.morph").value(keyword2))).build();
+        spanNearQueryBuilder.clauses(spanQuery1, spanQuery2).slop(slop).inOrder(inOrder);
+
+        NativeQuery searchQuery = NativeQuery.builder()
+                .withQuery(spanNearQueryBuilder.build()._toQuery())
+                .withPageable(pageable)
+                .build();
+
+        SearchHits<NewsIndex> searchHits = operations.search(searchQuery, NewsIndex.class);
+        return new PageImpl<>(searchHits.stream().map(h -> h.getContent()).collect(Collectors.toList()), pageable, searchHits.getTotalHits());
+    }
+
+//    /**
+//     * 불리언 연산자 + Span Near 쿼리 (Bool Query with Span Near)
+//     * - "빅데이터" 또는 "AI"를 포함하고 (should)
+//     * - "데이터"와 "분석"이 가까이 있는 (must)
+//     * - "개발" 카테고리가 아닌 (must_not) 문서 검색
+//     */
+//    public Page<Article> searchComplexWithSpanNear(String generalKeyword1, String generalKeyword2, String spanKeyword1, String spanKeyword2, String excludeCategory, int slop, boolean inOrder, Pageable pageable) {
+//        BoolQuery.Builder boolQueryBuilder = QueryBuilders.bool();
+//
+//        // SHOULD (OR): 일반 키워드 매치
+//        boolQueryBuilder.should(
+//                QueryBuilders.match(m -> m.field("content").query(generalKeyword1))._toQuery(),
+//                QueryBuilders.match(m -> m.field("content").query(generalKeyword2))._toQuery()
+//        ).minimumShouldMatch("1");
+//
+//        // MUST (AND): Span Near 쿼리
+//        SpanNearQuery spanNearQuery = SpanNearQuery.of(sn -> sn
+//                .clauses(
+//                        SpanTermQuery.of(st -> st.field("content").value(spanKeyword1))._toQuery(),
+//                        SpanTermQuery.of(st -> st.field("content").value(spanKeyword2))._toQuery()
+//                )
+//                .slop(slop)
+//                .inOrder(inOrder)
+//        );
+//        boolQueryBuilder.must(spanNearQuery._toQuery());
+//
+//        // MUST_NOT (NOT): 특정 카테고리 제외
+//        boolQueryBuilder.mustNot(
+//                TermQuery.of(t -> t.field("author.keyword").value(excludeCategory))._toQuery()
+//        );
+//
+//        NativeQuery searchQuery = NativeQuery.builder()
+//                .withQuery(boolQueryBuilder.build()._toQuery())
+//                .withPageable(pageable)
+//                .build();
+//
+//        SearchHits<Article> searchHits = elasticsearchOperations.search(searchQuery, Article.class);
+//        return new PageImpl<>(searchHits.stream().map(h -> h.getContent()).collect(Collectors.toList()), pageable, searchHits.getTotalHits());
+//    }
+
     public PageResult<NewsIndex> dynamicSearch (SearchRequest request, Pageable pageable) {
         NativeQueryBuilder queryBuilder = new NativeQueryBuilder();
-        // Query
-        queryBuilder.withQuery(getBoolMustQuery(request)._toQuery());
 
-        // collapse filed
+        if (request.getQuery().matches(SearchConst.PATTENS_SYN)) {
+            queryBuilder.withQuery(getBoolBigramQuery(request.getQuery())._toQuery());
+        } else {
+            queryBuilder.withQuery(getBoolMustQuery(request)._toQuery());
+        }
         queryBuilder.withFieldCollapse(getFieldCollapse());
-//
-////        queryBuilder.withAggregation("total", getCardinalityAggregation()._toAggregation());
+
         TermsAggregation termsAggregation = new TermsAggregation.Builder().field("category").build();
         Aggregation termAggregation = new Aggregation.Builder().terms(termsAggregation).build();
-//        Aggregation cardinalityAggregation = new Aggregation.Builder().cardinality(getCardinalityAggregation()).build();
-        Aggregation scriptedMetricAggregation = new Aggregation.Builder().scriptedMetric(getScriptedMetricAggregation()).build();
-////        Aggregation totalAggregation = new Aggregation.Builder().aggregations("", termAggregation).aggregations("", cardinalityAggregation);
-////        new Aggregation.Builder().aggregations("term" , termAggregation);
-//
-//
+//        Aggregation scriptedMetricAggregation = new Aggregation.Builder().scriptedMetric(getScriptedMetricAggregation()).build();
         queryBuilder.withAggregation("term", termAggregation);
-//        queryBuilder.withAggregation("total", cardinalityAggregation);
-        queryBuilder.withAggregation("total", scriptedMetricAggregation);
-//
-//        // highlight
-        queryBuilder.withHighlightQuery(new HighlightQuery(getHighlight(), NewsIndex.class));
-//
-//        // page
+//        queryBuilder.withAggregation("total", scriptedMetricAggregation);
+
+//        queryBuilder.withHighlightQuery(new HighlightQuery(getHighlight(), NewsIndex.class));
+
         queryBuilder.withPageable(pageable);
         queryBuilder.withTrackTotalHits(true);
-//
-//        // return field
-        queryBuilder.withFields("title","content","category", "published_at");
-//        queryBuilder.withStoredFields(List.of("title","content","category","regist_date", "published_at", "index_name"));
-//
-//        // sort
-        queryBuilder.withSort(getSortOptions());
-//
-//        // filter
-        if (request.getCategories() != null) queryBuilder.withFilter(getFilterQuery(request));
-//
-//        // debug
-        queryBuilder.withExplain(true);
 
-        // page list return
+        queryBuilder.withFields("title","content","category", "published_at");
+        queryBuilder.withSort(getSortOptions());
+
+        if (request.getCategories() != null) queryBuilder.withFilter(getFilterQuery(request));
+
+        queryBuilder.withExplain(false);
+
         SearchPage<NewsIndex> indexSearchPage = SearchHitSupport.searchPageFor(operations.search(queryBuilder.build(), NewsIndex.class), pageable);
 
-        // page result mapping // highlight filed mapping
         final List <NewsIndex> companyGuideList = indexSearchPage.stream()
                 .map(s-> {
                     final NewsIndex content = s.getContent();
@@ -118,9 +173,8 @@ public class SearchService {
 
         ElasticsearchAggregations aggregations = (ElasticsearchAggregations) indexSearchPage.getSearchHits().getAggregations();
         List<ElasticsearchAggregation> aggregationsList = aggregations.aggregations();
-//
+
         long totalCount = indexSearchPage.getTotalElements();
-//
         Map<String, Map<String, Long>> aggregatedData = new HashMap<>();
         Map <String, Long> aggregatedTermData = new HashMap<>();
         for ( ElasticsearchAggregation aggregation : aggregationsList) {
@@ -137,16 +191,7 @@ public class SearchService {
 
         // page result mapping // highlight filed mapping
         final List <Explanation> explanationList = indexSearchPage.stream().map(SearchHit::getExplanation).toList();
-
         return new PageResult<NewsIndex>(totalCount, companyGuideList, pageable, explanationList, aggregatedData);
-    }
-
-    private static CardinalityAggregation getCardinalityAggregation() {
-        // collapse field 값에 대한 total count 값이 없을 때 해당 값에 대하여 Aggregation cardinality 함수 적용 카운트 값 확인 필요
-        return AggregationBuilders.cardinality()
-                .field(SearchConst.SearchField.COLLAPSE_FIELD.getValue())
-                .precisionThreshold(1000)
-                .build();
     }
 
     private static ScriptedMetricAggregation getScriptedMetricAggregation() {
@@ -181,10 +226,10 @@ public class SearchService {
 
     private static List<SortOptions> getSortOptions() {
         List<SortOptions> sortOptions = new ArrayList<>();
-        sortOptions.add(SortOptions.of((b) -> {
-            FieldSort fieldSort = new FieldSort.Builder().field("category").order(SortOrder.Desc).build();
-            return b.field(fieldSort);
-        }));
+//        sortOptions.add(SortOptions.of((b) -> {
+//            FieldSort fieldSort = new FieldSort.Builder().field("category").order(SortOrder.Desc).build();
+//            return b.field(fieldSort);
+//        }));
         sortOptions.add(SortOptions.of((b) -> {
             FieldSort fieldSort = new FieldSort.Builder().field("_score").order(SortOrder.Desc).build();
             return b.field(fieldSort);
@@ -199,7 +244,7 @@ public class SearchService {
                 .withFragmentOffset(SearchConst.HighlightFieldParams.TITLE.getFragmentOffset())
                 .withFragmentSize(SearchConst.HighlightFieldParams.TITLE.getFragmentSize())
                 .withNumberOfFragments(SearchConst.HighlightFieldParams.TITLE.getFragmentNum())
-//                .withRequireFieldMatch(true)
+                .withRequireFieldMatch(true)
                 .withPreTags(SearchConst.HighlightFieldParams.TITLE.getPreTag())
                 .withPostTags(SearchConst.HighlightFieldParams.TITLE.getPostTag())
                 .build();
@@ -207,7 +252,6 @@ public class SearchService {
         // 하이라이트 필드 설정 (검색 필드에 해당하는 필드만 하이라이트 적용됨 (엘라스틱 서치 기준))
         HighlightField highlightTitle = new HighlightField(SearchConst.SearchField.TITLE_MORPH.getValue(), highlightParameters);
         HighlightField highlightContentMorph = new HighlightField(SearchConst.SearchField.CONTENT_MORPH.getValue(), highlightParameters);
-//        HighlightField highlightContentBigram = new HighlightField(SearchConst.SearchField.CONTENT_BIGRAM.getValue(), highlightParameters);
 
         Highlight highlight = new Highlight(List.of(highlightTitle, highlightContentMorph));
 
@@ -226,7 +270,7 @@ public class SearchService {
 
     private static BoolQuery getBoolMustQuery(SearchRequest request) {
         // 검색 필드 가중치 조합 불린 쿼리
-        BoolQuery searchQueries = getBoolShouldQuery(request.getQuery(), request.getOperator());
+        BoolQuery searchQueries = getBoolShouldQuery(request.getQuery());
 
         BoolQuery.Builder reSearchQueryBuilder = new BoolQuery.Builder();
         reSearchQueryBuilder.must(searchQueries._toQuery());
@@ -234,12 +278,9 @@ public class SearchService {
         // 재검색은 5번까지 가능
         if (request.getRequery() != null) {
             for (String reQuery : request.getRequery()) {
-                reSearchQueryBuilder.must(getBoolShouldQuery(reQuery, request.getOperator())._toQuery());
+                reSearchQueryBuilder.must(getBoolShouldQuery(reQuery)._toQuery());
             }
         }
-
-        if (request.getCategories()!= null) reSearchQueryBuilder.filter(getFilterQuery(request));
-
         return reSearchQueryBuilder.build();
     }
 
@@ -258,19 +299,29 @@ public class SearchService {
         return filterQuery;
     }
 
-
-
-    private static BoolQuery getBoolShouldQuery(String query, Operator operator ) {
+    private static BoolQuery getBoolShouldQuery(String query) {
 
         QueryStringQuery korContentQuery =
-                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_KOR, SearchConst.SearchField.CONTENT_MORPH , operator);
+                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_KOR, SearchConst.SearchField.CONTENT_MORPH , Operator.And);
         QueryStringQuery bigramContentQuery =
-                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_BIGRAM, SearchConst.SearchField.CONTENT_BIGRAM, operator);
+                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_BIGRAM, SearchConst.SearchField.CONTENT_BIGRAM, Operator.And);
         QueryStringQuery korTitleQuery =
-                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_KOR, SearchConst.SearchField.TITLE_MORPH, operator);
+                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_KOR, SearchConst.SearchField.TITLE_MORPH, Operator.And);
 
         BoolQuery.Builder boolQueryBuilder = new BoolQuery.Builder();
-        boolQueryBuilder.must(List.of(korContentQuery._toQuery(), bigramContentQuery._toQuery(), korTitleQuery._toQuery()));
+        boolQueryBuilder.should(List.of(korContentQuery._toQuery(), bigramContentQuery._toQuery(), korTitleQuery._toQuery()));
+        return boolQueryBuilder.build();
+    }
+
+
+    private static BoolQuery getBoolBigramQuery(String query) {
+        QueryStringQuery bigramContentQuery =
+                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_BIGRAM, SearchConst.SearchField.CONTENT_BIGRAM, Operator.And);
+        QueryStringQuery bigramTitleQuery =
+                getQueryStringQuery(query, SearchConst.Analyzer.ANALYZER_BIGRAM, SearchConst.SearchField.TITLE_BIGRAM, Operator.And);
+
+        BoolQuery.Builder boolQueryBuilder = new BoolQuery.Builder();
+        boolQueryBuilder.should(List.of(bigramContentQuery._toQuery(), bigramTitleQuery._toQuery()));
         return boolQueryBuilder.build();
     }
 
