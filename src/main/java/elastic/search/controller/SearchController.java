@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/news")
 public class SearchController {
@@ -38,11 +40,29 @@ public class SearchController {
     }
 
     @PostMapping("/span")
-    public Page<NewsIndex> findNewsIndexSpan (@Validated String keyword1, String keyword2, int slop, boolean inOrder, int size, int page ) {
+    public Page<NewsIndex> findNewsIndexSpan (String keyword1, String keyword2, int slop, boolean inOrder, int size, int page ) {
         Pageable pageable = Pageable.ofSize(size).withPage(page);
         final Page<NewsIndex> searchPage = searchService.searchBySpanNear(keyword1, keyword2, slop, inOrder, pageable);
         extractedResultPrint(pageable);
         return new ResponseEntity<>(searchPage, HttpStatus.OK).getBody();
+    }
+
+    @PostMapping("/topicRank")
+    public String topicRankResult (String query) {
+        String topicRankResult = searchService.topicRankResult(query);
+        return new ResponseEntity<>(topicRankResult, HttpStatus.OK).getBody();
+    }
+
+    @PostMapping("/neRank")
+    public String namedEntityResult (String query) {
+        String topicRankResult = searchService.namedEntityResult(query);
+        return new ResponseEntity<>(topicRankResult, HttpStatus.OK).getBody();
+    }
+
+    @PostMapping("/sentiment")
+    public Map<String, Object> sentimentAnalyze (String sentence) {
+        Map<String, Object> resultMap = searchService.getSentimentAnalyze(sentence);
+        return new ResponseEntity<>(resultMap, HttpStatus.OK).getBody();
     }
 
     private static void extractedResultPrint(Pageable searchPage) {

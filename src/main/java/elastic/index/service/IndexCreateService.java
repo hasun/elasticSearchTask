@@ -3,6 +3,7 @@ package elastic.index.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import elastic.index.domain.NewsIndex;
+import elastic.tms.util.TmsUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -13,6 +14,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
@@ -55,6 +57,19 @@ public class IndexCreateService {
                 }
                 try {
                     NewsIndex newsArticle = objectMapper.readValue(line, NewsIndex.class);
+                    String tmsRawStream = TmsUtils.getTmsRawStream(newsArticle.getTitle() + " "+ newsArticle.getContent());
+                    newsArticle.setRaw_stream_index(tmsRawStream);
+                    Map<String,List<String>> neResultMap = TmsUtils.getTmsNeStr(newsArticle.getTitle() + " "+ newsArticle.getContent());
+                    newsArticle.setNe_organization(neResultMap.get("OG"));
+                    newsArticle.setNe_person(neResultMap.get("PS"));
+                    newsArticle.setNe_location(neResultMap.get("LC"));
+                    List<String> neAll = new ArrayList<>();
+                    neAll.addAll(neResultMap.get("OG"));
+                    neAll.addAll(neResultMap.get("PS"));
+                    neAll.addAll(neResultMap.get("LC"));
+                    StringBuilder neRawStrBuilder = getStringBuilder(tmsRawStream, neAll);
+                    newsArticle.setNe_stream_index(neRawStrBuilder.toString());
+
                     newsArticlesFromFile.add(newsArticle);
                     System.out.println("JSON 라인 파싱 성공: " + newsArticle.getNews_id());
                 } catch (JsonProcessingException jsonEx) {
@@ -91,5 +106,21 @@ public class IndexCreateService {
         System.out.println("Elasticsearch의 'news_articles' 인덱스에 데이터가 저장되었는지 확인하세요.");
 
         return indexNewCount == newsArticlesFromFile.size();
+    }
+
+    private static StringBuilder getStringBuilder(String tmsRawStream, List<String> neAll) {
+        StringBuilder neRawStrBuilder = new StringBuilder();
+
+        for (String tokens : tmsRawStream.split("\n")) {
+            for (String token : tokens.split(" ")) {
+                if (neAll.contains(token) ) {
+                    neRawStrBuilder.append(token).append(" ");
+                }else if (token.contains("_") && (neAll.contains(token.split("_")[0]) || neAll.contains(token.split("_")[1])) ) {
+                    neRawStrBuilder.append(token).append(" ");;
+                }
+            }
+            neRawStrBuilder.append("\n");
+        }
+        return neRawStrBuilder;
     }
 }

@@ -11,6 +11,11 @@ repositories {
     mavenCentral()
 }
 
+compileJava.options.encoding = 'UTF-8'
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -26,6 +31,8 @@ dependencies {
 //    swagger
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.0.2' // Swagger
     implementation("com.fasterxml.jackson.core:jackson-core")
+    implementation fileTree (dir : 'local_lib', includes : ['*.jar'])
+    implementation("com.google.code.gson:gson")
 }
 
 test {

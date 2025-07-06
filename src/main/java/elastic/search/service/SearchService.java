@@ -5,13 +5,17 @@ import co.elastic.clients.elasticsearch._types.aggregations.*;
 import co.elastic.clients.elasticsearch._types.query_dsl.*;
 import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
 import co.elastic.clients.json.JsonData;
+import com.saltlux.util.topicrank.TopicRankDocument;
 import elastic.index.domain.NewsIndex;
 import elastic.search.constant.SearchConst;
 import elastic.search.dto.PageResult;
 import elastic.search.dto.SearchRequest;
 import elastic.search.repository.NewsRepository;
+import com.saltlux.util.topicrank.TopicRankUtil;
+import elastic.tms.util.TmsUtils;
 import jakarta.validation.Valid;
-import org.elasticsearch.index.query.SpanNearQueryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -21,22 +25,18 @@ import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
 import org.springframework.data.elasticsearch.core.*;
 import org.springframework.data.elasticsearch.core.document.Explanation;
-import org.springframework.data.elasticsearch.core.query.HighlightQuery;
 import org.springframework.data.elasticsearch.core.query.highlight.Highlight;
 import org.springframework.data.elasticsearch.core.query.highlight.HighlightField;
 import org.springframework.data.elasticsearch.core.query.highlight.HighlightFieldParameters;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static co.elastic.clients.elasticsearch._types.query_dsl.SpanQuery.Kind.SpanNear;
-
 @Service
 public class SearchService {
+    private static final Logger log = LoggerFactory.getLogger(SearchService.class);
     private final ElasticsearchOperations operations;
     private final NewsRepository newsRepository;
 
@@ -59,6 +59,47 @@ public class SearchService {
         return newsRepository.findByKeywordWithQuery(keyword, pageable);
     }
 
+    public String topicRankResult (String query) {
+        Pageable pageable = Pageable.ofSize(10).withPage(0);
+        Page<NewsIndex> result = newsRepository.findByKeywordWithQuery(query, pageable);
+        List<TopicRankDocument> topicRankDocumentList  = new ArrayList<>();
+
+        for ( NewsIndex news : result.getContent()) {
+            TopicRankDocument topicRankDocument = new TopicRankDocument(news.getNews_id(),news.getRaw_stream_index());
+            topicRankDocumentList.add(topicRankDocument);
+        }
+        TopicRankUtil topicRankUtil = new TopicRankUtil();
+        String text = topicRankUtil.getTopicRankJson(topicRankDocumentList,2,query,15);
+        log.info("topicRank Result Graph {}", text);
+        return text;
+    }
+
+    public String namedEntityResult (String query) {
+        Pageable pageable = Pageable.ofSize(10).withPage(0);
+        Page<NewsIndex> result = newsRepository.findByKeywordWithQuery(query, pageable);
+        List<TopicRankDocument> topicRankDocumentList  = new ArrayList<>();
+
+        for ( NewsIndex news : result.getContent()) {
+            TopicRankDocument neDocument = new TopicRankDocument(news.getNews_id(), news.getNe_stream_index());
+            topicRankDocumentList.add(neDocument);
+        }
+        TopicRankUtil topicRankUtil = new TopicRankUtil();
+        String text = topicRankUtil.getTopicRankJson(topicRankDocumentList,2,query,10);
+        log.info("neRank Result Graph {}", text);
+        return text;
+    }
+
+    public Map <String, Object> getSentimentAnalyze (String sentence) {
+        Map <String, Object> result;
+        try {
+            result = TmsUtils.getTextAnalyzer(sentence);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        log.info("sentiment Result {}", result);
+        return result;
+    }
+
     /**
      * Span Near 검색: "데이터"와 "분석" 단어가 최대 2단어 이내, 순서대로 나타나는 문서 검색
      *
@@ -74,11 +115,13 @@ public class SearchService {
         SpanNearQuery.Builder spanNearQueryBuilder = new SpanNearQuery.Builder();
         SpanQuery.Builder spanQueryBuilder = new SpanQuery.Builder();
         SpanQuery spanQuery1 = spanQueryBuilder.spanTerm(SpanTermQuery.of(st -> st.field("title.morph").value(keyword1))).build();
+        spanQueryBuilder = new SpanQuery.Builder();
         SpanQuery spanQuery2 = spanQueryBuilder.spanTerm(SpanTermQuery.of(st -> st.field("title.morph").value(keyword2))).build();
         spanNearQueryBuilder.clauses(spanQuery1, spanQuery2).slop(slop).inOrder(inOrder);
+        SpanNearQuery spanNearQuery = spanNearQueryBuilder.build();
 
         NativeQuery searchQuery = NativeQuery.builder()
-                .withQuery(spanNearQueryBuilder.build()._toQuery())
+                .withQuery(spanNearQuery._toQuery())
                 .withPageable(pageable)
                 .build();
 
@@ -136,12 +179,12 @@ public class SearchService {
         }
         queryBuilder.withFieldCollapse(getFieldCollapse());
 
-        TermsAggregation termsAggregation = new TermsAggregation.Builder().field("category").build();
-        Aggregation termAggregation = new Aggregation.Builder().terms(termsAggregation).build();
+        TermsAggregation categoryAggregation = new TermsAggregation.Builder().field("category").build();
+        TermsAggregation dateAggregation = new TermsAggregation.Builder().field("published_at").build();
 //        Aggregation scriptedMetricAggregation = new Aggregation.Builder().scriptedMetric(getScriptedMetricAggregation()).build();
-        queryBuilder.withAggregation("term", termAggregation);
+        queryBuilder.withAggregation("date", new Aggregation.Builder().terms(dateAggregation).build());
+        queryBuilder.withAggregation("category", new Aggregation.Builder().terms(categoryAggregation).build());
 //        queryBuilder.withAggregation("total", scriptedMetricAggregation);
-
 //        queryBuilder.withHighlightQuery(new HighlightQuery(getHighlight(), NewsIndex.class));
 
         queryBuilder.withPageable(pageable);
@@ -285,8 +328,6 @@ public class SearchService {
     }
 
     private static Query getFilterQuery(SearchRequest request) {
-        Query filterQuery = null;
-
         List<FieldValue> fieldValueList = new ArrayList<>();
         for (String category : request.getCategories()) {
             fieldValueList.add(new FieldValue.Builder().stringValue(category).build());
@@ -294,7 +335,7 @@ public class SearchService {
         TermsQueryField termsQueryCategoryField = new TermsQueryField.Builder()
                 .value(fieldValueList)
                 .build();
-        filterQuery = QueryBuilders.terms().field("-").terms(termsQueryCategoryField).build()._toQuery();
+        Query filterQuery = QueryBuilders.terms().field("category").terms(termsQueryCategoryField).build()._toQuery();
 
         return filterQuery;
     }
